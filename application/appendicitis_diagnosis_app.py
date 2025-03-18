@@ -3,23 +3,22 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import pandas as pd
 import joblib
-from lightgbm import Booster
 
-#  Charger le modèle LightGBM
-model = Booster(model_file="data/best_model.txt")
+#  Charger le modèle LightGBM et le scaler
+model = joblib.load("data/best_model.pkl")
 scaler = joblib.load("data/scaler.pkl")
 
-# Définir les noms des colonnes avec feature_name()
-FEATURES = model.feature_name()
+#  Charger les colonnes originales utilisées lors de l'entraînement
+original_features = pd.read_csv("data/X_train_original.csv").columns
 
-# Interface utilisateur
+#  Interface utilisateur
 st.title("🩺 Prédiction de l'Appendicite chez l'Enfant")
 
-# Dictionnaires de conversion
+#  Dictionnaires de conversion
 sex_mapping = {"Masculin": 0, "Féminin": 1}
 boolean_mapping = {"Non": 0, "Oui": 1}
 
-# Entrées utilisateur optimisées
+#  Entrées utilisateur
 inputs = {
     "Age": st.number_input("Âge de l'enfant", min_value=0, max_value=18, value=10),
     "Sex": sex_mapping[st.selectbox("Sexe", ["Masculin", "Féminin"])],
@@ -41,53 +40,60 @@ inputs = {
     "Psoas_Sign": boolean_mapping[st.selectbox("Signe du psoas", ["Non", "Oui"])],
     "Ipsilateral_Rebound_Tenderness": boolean_mapping[st.selectbox("Signe de rebond ipsilatéral", ["Non", "Oui"])]
 }
+
 #  Prédiction avec le modèle
 if st.button("Prédire"):
     input_df = pd.DataFrame([inputs])
 
-    #  Ajouter les colonnes manquantes (à 0)
-    for col in FEATURES:
+    #  Ajouter automatiquement les colonnes manquantes et trier dans le bon ordre
+    for col in original_features:
         if col not in input_df.columns:
             input_df[col] = 0
 
-    #  Réorganiser l'ordre des colonnes
-    input_df = input_df[FEATURES]
+    #  Supprimer les colonnes inutilisées
+    input_df = input_df[original_features]
 
     #  Appliquer la normalisation
     input_df = pd.DataFrame(scaler.transform(input_df), columns=input_df.columns)
 
     #  Prédiction (en probabilité)
-    proba = model.predict(input_df, raw_score=False)[0]
-    prediction = int(proba > 0.5)  # Probabilité > 0.5 => Appendicite
+    proba = model.predict(input_df)[0]
+    prediction = int(proba > 0.5)
 
     #  Affichage du résultat
-    st.markdown(f"###  **Prédiction :** {' Appendicite' if prediction == 1 else ' Non Appendicite'}")
-    st.markdown(f"###  **Probabilité d'appendicite :** {proba:.2%}")
+    st.markdown(f"### 🏥 **Prédiction :** {' Appendicite' if prediction == 1 else '❌ Non Appendicite'}")
+    st.markdown(f"### 🔎 **Probabilité d'appendicite :** {proba:.2%}")
 
     #  Interprétation SHAP
-    st.subheader(" Facteurs influençant la décision (SHAP)")
+    try:
+        st.subheader("📊 Facteurs influençant la décision (SHAP)")
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(input_df)
 
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(input_df)
+        #  Affichage des valeurs SHAP sous forme de graphique waterfall
+        fig, ax = plt.subplots(figsize=(8, 5))
+        shap.waterfall_plot(shap.Explanation(values=shap_values[0],
+                                             base_values=explainer.expected_value,
+                                             feature_names=input_df.columns))
+        st.pyplot(fig)
 
-    #  Affichage des valeurs SHAP sous forme de graphique waterfall
-    fig, ax = plt.subplots(figsize=(8, 5))
-    shap.waterfall_plot(shap.Explanation(values=shap_values[0], base_values=explainer.expected_value, feature_names=input_df.columns))
-    st.pyplot(fig)
+        #  Affichage sous forme de graphique force plot
+        fig, ax = plt.subplots(figsize=(8, 5))
+        shap.force_plot(
+            explainer.expected_value,
+            shap_values[0],
+            input_df.iloc[0, :],
+            matplotlib=True,
+            show=False
+        )
+        plt.savefig("force_plot.png", bbox_inches='tight')
+        st.image("force_plot.png")
 
-    # Affichage sous forme de graphique force plot (conversion en image)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    shap.force_plot(
-        explainer.expected_value,
-        shap_values[0],
-        input_df.iloc[0, :],
-        matplotlib=True,
-        show=False
-    )
-    plt.savefig("force_plot.png", bbox_inches='tight')
-    st.image("force_plot.png")
+        #  Affichage sous forme de graphique bar plot
+        fig, ax = plt.subplots(figsize=(8, 5))
+        shap.bar_plot(shap_values[0], feature_names=input_df.columns, max_display=10)
+        st.pyplot(fig)
 
-    # Affichage sous forme de graphique bar plot
-    fig, ax = plt.subplots(figsize=(8, 5))
-    shap.bar_plot(shap_values[0], feature_names=input_df.columns, max_display=10)
-    st.pyplot(fig)
+    except Exception as e:
+        st.error(f"Erreur lors de l'interprétation SHAP : {e}")
+
